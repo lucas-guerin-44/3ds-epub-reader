@@ -35,6 +35,13 @@ static void apt_hook_callback(APT_HookType hook, void* param) {
         case APTHOOK_ONSUSPEND:
         case APTHOOK_ONSLEEP:
             app->needs_save = true;
+            // Restore backlight so Home Menu is visible
+            {
+                bool top_off = (app->current_screen == SCREEN_READER)
+                    ? (app->reader.top_mode == TOP_OFF) : app->top_screen_off;
+                if (top_off)
+                    lcd_set_backlight(true);
+            }
             break;
         case APTHOOK_ONRESTORE:
         case APTHOOK_ONWAKEUP:
