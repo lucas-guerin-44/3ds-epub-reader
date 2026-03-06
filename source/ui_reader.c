@@ -715,6 +715,21 @@ void reader_draw_bottom(ReaderState* reader) {
 
     C2D_ViewReset();
 
+    // Progress bar at bottom edge (screen coords)
+    {
+        float bar_h = 2.0f;
+        float bar_y = BOT_SCREEN_HEIGHT - bar_h;
+        float total_ch = reader->book.chapter_count;
+        float progress = (reader->current_chapter +
+                          (float)(display_page + 1) / reader->total_pages) / total_ch;
+        if (progress > 1.0f) progress = 1.0f;
+        u32 bar_bg = reader->dark_mode
+            ? C2D_Color32(0x40, 0x40, 0x40, 0xFF)
+            : C2D_Color32(0xD0, 0xD0, 0xD0, 0xFF);
+        C2D_DrawRectSolid(0, bar_y, 0.9f, BOT_SCREEN_WIDTH, bar_h, bar_bg);
+        C2D_DrawRectSolid(0, bar_y, 0.95f, BOT_SCREEN_WIDTH * progress, bar_h, CLR_ACCENT);
+    }
+
     // Save popup overlay (drawn in screen coords)
     if (reader->show_save_popup && reader->overlay_buf) {
         float px = BOT_SCREEN_WIDTH / 2.0f - 60;

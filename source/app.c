@@ -19,10 +19,19 @@ static void save_reader_progress(AppState* app) {
 
 static void apt_hook_callback(APT_HookType hook, void* param) {
     AppState* app = (AppState*)param;
-    if (hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP) {
-        // Set flag - save in main loop instead of during APT signal
-        // (file I/O during APT transition can crash in CIA mode)
-        app->needs_save = true;
+    switch (hook) {
+        case APTHOOK_ONSUSPEND:
+        case APTHOOK_ONSLEEP:
+            // Set flag - save in main loop instead of during APT signal
+            app->needs_save = true;
+            break;
+        case APTHOOK_ONRESTORE:
+        case APTHOOK_ONWAKEUP:
+            // Force full redraw after returning from Home menu
+            app->needs_redraw = true;
+            break;
+        default:
+            break;
     }
 }
 
