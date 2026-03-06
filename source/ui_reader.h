@@ -5,6 +5,7 @@
 #include <citro2d.h>
 #include <stdbool.h>
 #include "epub.h"
+#include "highlight.h"
 
 #define READER_MARGIN_X  6.0f
 #define READER_MARGIN_Y  0.0f
@@ -14,6 +15,12 @@ typedef enum {
     ORIENT_HORIZONTAL,  // 320x240 (normal)
     ORIENT_VERTICAL     // 240x320 (rotated)
 } Orientation;
+
+typedef enum {
+    TOP_INFO,       // Default: metadata, chapter info, controls
+    TOP_DUALPAGE,   // Show next page text on top screen
+    TOP_OFF         // Top screen backlight off
+} TopScreenMode;
 
 typedef struct {
     EpubBook    book;
@@ -50,6 +57,23 @@ typedef struct {
     bool chapter_changed; // set when chapter loads, cleared by app after saving
     bool dark_mode;       // dark background + light text
     int  page_turn_count; // counts page turns for periodic auto-save
+
+    // Dual-page mode (top screen shows next page)
+    TopScreenMode  top_mode;
+    C2D_TextBuf    top_text_buf;
+    C2D_Text       top_rendered_text;
+    int            top_rendered_page;  // which page is parsed into top_text_buf (-1 = stale)
+
+    // Text selection & highlighting
+    GlyphMap       glyph_map;
+    TouchPhase     touch_phase;
+    int            touch_down_frames;
+    touchPosition  touch_start;
+    int            sel_anchor_start, sel_anchor_end;
+    int            sel_current_start, sel_current_end;
+    bool           has_selection;
+    bool           show_save_popup;
+    HighlightStore highlights;
 } ReaderState;
 
 // Open a book and start reading from the given chapter/page
@@ -62,8 +86,8 @@ void reader_close(ReaderState* reader);
 // Recalculate layout and pages (call after changing font_scale or orientation)
 void reader_relayout(ReaderState* reader);
 
-// Handle input. Returns true if user wants to exit reader.
-bool reader_update(ReaderState* reader, u32 kDown, u32 kHeld, touchPosition* touch);
+// Handle input. Returns action to take.
+ReaderAction reader_update(ReaderState* reader, u32 kDown, u32 kHeld, touchPosition* touch);
 
 // Draw on top and bottom screens
 void reader_draw_top(ReaderState* reader, C2D_TextBuf buf);

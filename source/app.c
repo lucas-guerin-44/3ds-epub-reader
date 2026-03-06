@@ -20,7 +20,9 @@ static void save_reader_progress(AppState* app) {
 static void apt_hook_callback(APT_HookType hook, void* param) {
     AppState* app = (AppState*)param;
     if (hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP) {
-        save_reader_progress(app);
+        // Set flag - save in main loop instead of during APT signal
+        // (file I/O during APT transition can crash in CIA mode)
+        app->needs_save = true;
     }
 }
 
@@ -29,6 +31,7 @@ void app_init(AppState* app) {
 
     app->current_screen = SCREEN_LIBRARY;
     app->bottom_clear_color = CLR_BG_LIGHT;
+    app->top_clear_color = CLR_BG_DARK;
 
     // Create render targets
     app->top    = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
@@ -62,25 +65,54 @@ void app_init(AppState* app) {
 }
 
 void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
+    // Handle deferred save from APT hook (suspend/sleep)
+    if (app->needs_save) {
+        save_reader_progress(app);
+        app->needs_save = false;
+    }
+
     // Poll battery every ~1 second
     if (app->ptmu_ok && --app->battery_poll_timer <= 0) {
+        u8 prev_level = app->battery_level;
+        u8 prev_charging = app->battery_charging;
         PTMU_GetBatteryLevel(&app->battery_level);
         PTMU_GetBatteryChargeState(&app->battery_charging);
-        app->battery_poll_timer = 60;
-        app->needs_redraw = true;
+        app->battery_poll_timer = 1800;  // ~30 seconds at 60fps
+        if (app->battery_level != prev_level || app->battery_charging != prev_charging)
+            app->needs_redraw = true;
     }
 
     // Active timers need redraws
     if (app->error_timer > 0 || app->loading)
         app->needs_redraw = true;
 
-    // SELECT: toggle top screen backlight
+    // SELECT: cycle top screen mode (reader) or toggle backlight (other screens)
     if ((kDown & KEY_SELECT) && app->gsplcd_ok) {
-        app->top_screen_off = !app->top_screen_off;
-        if (app->top_screen_off)
-            GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP);
-        else
-            GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
+        if (app->current_screen == SCREEN_READER) {
+            // 3-state cycle: INFO → DUALPAGE → OFF → INFO
+            switch (app->reader.top_mode) {
+                case TOP_INFO:
+                    app->reader.top_mode = TOP_DUALPAGE;
+                    app->reader.top_rendered_page = -1;
+                    app->reader.rendered_page = -1;  // bottom shows different page now
+                    break;
+                case TOP_DUALPAGE:
+                    app->reader.top_mode = TOP_OFF;
+                    app->reader.rendered_page = -1;  // bottom reverts to current_page
+                    GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP);
+                    break;
+                case TOP_OFF:
+                    app->reader.top_mode = TOP_INFO;
+                    GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
+                    break;
+            }
+        } else {
+            app->top_screen_off = !app->top_screen_off;
+            if (app->top_screen_off)
+                GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP);
+            else
+                GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
+        }
         app->needs_redraw = true;
     }
 
@@ -124,10 +156,16 @@ void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
             break;
         }
 
-        case SCREEN_READER:
-            // Update bottom screen clear color based on dark mode
+        case SCREEN_READER: {
+            // Update screen clear colors based on dark mode and top mode
             app->bottom_clear_color = app->reader.dark_mode
                 ? CLR_READER_BG_DARK : CLR_BG_LIGHT;
+            if (app->reader.top_mode == TOP_DUALPAGE) {
+                app->top_clear_color = app->reader.dark_mode
+                    ? CLR_READER_BG_DARK : CLR_BG_LIGHT;
+            } else {
+                app->top_clear_color = CLR_BG_DARK;
+            }
 
             if (app->reader.needs_redraw)
                 app->needs_redraw = true;
@@ -144,12 +182,61 @@ void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
                 app->reader.page_turn_count = 0;
             }
 
-            if (reader_update(&app->reader, kDown, kHeld, touch)) {
+            ReaderAction action = reader_update(&app->reader, kDown, kHeld, touch);
+            if (action == READER_EXIT) {
+                // Restore top backlight if it was off
+                if (app->reader.top_mode == TOP_OFF && app->gsplcd_ok)
+                    GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
+                app->reader.top_mode = TOP_INFO;
                 save_reader_progress(app);
                 reader_close(&app->reader);
                 app->current_screen = SCREEN_LIBRARY;
                 app->library.needs_refresh = true;
                 app->bottom_clear_color = CLR_BG_LIGHT;
+                app->top_clear_color = CLR_BG_DARK;
+            } else if (action == READER_OPEN_HIGHLIGHTS) {
+                highlights_view_init(&app->highlights_view,
+                                     &app->reader.highlights,
+                                     &app->reader.book);
+                app->current_screen = SCREEN_HIGHLIGHTS;
+                app->bottom_clear_color = CLR_BG_LIGHT;
+                app->top_clear_color = CLR_BG_DARK;
+            }
+            break;
+        }
+
+        case SCREEN_HIGHLIGHTS:
+            app->bottom_clear_color = CLR_BG_LIGHT;
+
+            if (app->highlights_view.needs_redraw)
+                app->needs_redraw = true;
+
+            if (highlights_view_update(&app->highlights_view, kDown, kHeld, touch)) {
+                // Check if a jump was requested
+                if (app->highlights_view.jump_requested) {
+                    int ch = app->highlights_view.jump_chapter;
+                    int offset = app->highlights_view.jump_offset;
+
+                    // Load target chapter if different
+                    if (ch != app->reader.current_chapter) {
+                        app->reader.current_chapter = ch;
+                        app->reader.current_page = 0;
+                        reader_relayout(&app->reader);
+                    }
+
+                    // Find the page containing the target offset
+                    for (int p = 0; p < app->reader.total_pages; p++) {
+                        if (app->reader.page_offsets[p] <= offset &&
+                            app->reader.page_offsets[p + 1] > offset) {
+                            app->reader.current_page = p;
+                            break;
+                        }
+                    }
+                    app->reader.rendered_page = -1;
+                }
+                app->current_screen = SCREEN_READER;
+                app->bottom_clear_color = app->reader.dark_mode
+                    ? CLR_READER_BG_DARK : CLR_BG_LIGHT;
             }
             break;
 
@@ -174,31 +261,34 @@ void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
 }
 
 void app_draw_top(AppState* app) {
-    // Title always shown at top
-    C2D_DrawText(&app->title_text,
-        C2D_WithColor | C2D_AlignCenter,
-        TOP_SCREEN_WIDTH / 2.0f, 8.0f, 0.5f,
-        0.55f, 0.55f, CLR_ACCENT);
+    // Skip app chrome when in dual-page reader mode
+    bool dual_page = (app->current_screen == SCREEN_READER &&
+                      app->reader.top_mode == TOP_DUALPAGE);
 
-    // Divider
-    C2D_DrawRectSolid(40, 32, 0.5f, TOP_SCREEN_WIDTH - 80, 1, CLR_DIVIDER);
+    if (!dual_page) {
+        // Title always shown at top
+        C2D_DrawText(&app->title_text,
+            C2D_WithColor | C2D_AlignCenter,
+            TOP_SCREEN_WIDTH / 2.0f, 8.0f, 0.5f,
+            0.55f, 0.55f, CLR_ACCENT);
 
-    // Battery indicator (top-right)
-    if (app->ptmu_ok) {
-        float bx = TOP_SCREEN_WIDTH - 30.0f, by = 10.0f;
-        float bw = 20.0f, bh = 10.0f;
-        // Outline
-        C2D_DrawRectSolid(bx, by, 0.8f, bw, bh, CLR_TEXT_WHITE);
-        C2D_DrawRectSolid(bx + 1, by + 1, 0.8f, bw - 2, bh - 2, CLR_BG_DARK);
-        // Nub
-        C2D_DrawRectSolid(bx + bw, by + 3, 0.8f, 2, 4, CLR_TEXT_WHITE);
-        // Fill (0-5 levels)
-        float fill_w = (bw - 4) * app->battery_level / 5.0f;
-        u32 fill_clr = app->battery_charging ? C2D_Color32(0x4C, 0xAF, 0x50, 0xFF)
-                      : (app->battery_level <= 1 ? C2D_Color32(0xE5, 0x3E, 0x3E, 0xFF)
-                      : CLR_TEXT_WHITE);
-        if (fill_w > 0)
-            C2D_DrawRectSolid(bx + 2, by + 2, 0.9f, fill_w, bh - 4, fill_clr);
+        // Divider
+        C2D_DrawRectSolid(40, 32, 0.5f, TOP_SCREEN_WIDTH - 80, 1, CLR_DIVIDER);
+
+        // Battery indicator (top-right)
+        if (app->ptmu_ok) {
+            float bx = TOP_SCREEN_WIDTH - 30.0f, by = 10.0f;
+            float bw = 20.0f, bh = 10.0f;
+            C2D_DrawRectSolid(bx, by, 0.8f, bw, bh, CLR_TEXT_WHITE);
+            C2D_DrawRectSolid(bx + 1, by + 1, 0.8f, bw - 2, bh - 2, CLR_BG_DARK);
+            C2D_DrawRectSolid(bx + bw, by + 3, 0.8f, 2, 4, CLR_TEXT_WHITE);
+            float fill_w = (bw - 4) * app->battery_level / 5.0f;
+            u32 fill_clr = app->battery_charging ? C2D_Color32(0x4C, 0xAF, 0x50, 0xFF)
+                          : (app->battery_level <= 1 ? C2D_Color32(0xE5, 0x3E, 0x3E, 0xFF)
+                          : CLR_TEXT_WHITE);
+            if (fill_w > 0)
+                C2D_DrawRectSolid(bx + 2, by + 2, 0.9f, fill_w, bh - 4, fill_clr);
+        }
     }
 
     C2D_TextBufClear(app->dynamic_buf);
@@ -222,6 +312,10 @@ void app_draw_top(AppState* app) {
             reader_draw_top(&app->reader, app->dynamic_buf);
             break;
 
+        case SCREEN_HIGHLIGHTS:
+            highlights_view_draw_top(&app->highlights_view, app->dynamic_buf);
+            break;
+
         case SCREEN_TRANSFER: {
             C2D_Text text;
             C2D_TextParse(&text, app->dynamic_buf,
@@ -233,7 +327,6 @@ void app_draw_top(AppState* app) {
                          TOP_SCREEN_WIDTH / 2.0f, 50.0f, 0.5f,
                          0.45f, 0.45f, CLR_TEXT_WHITE);
 
-            // Show URL
             char url[128];
             snprintf(url, sizeof(url), "http://%s:%d",
                      app->httpd.ip_str, app->httpd.port);
@@ -243,7 +336,6 @@ void app_draw_top(AppState* app) {
                          TOP_SCREEN_WIDTH / 2.0f, 120.0f, 0.5f,
                          0.6f, 0.6f, CLR_ACCENT);
 
-            // Status
             C2D_TextParse(&text, app->dynamic_buf, app->httpd.status_msg);
             C2D_TextOptimize(&text);
             C2D_DrawText(&text, C2D_WithColor | C2D_AlignCenter,
@@ -253,24 +345,26 @@ void app_draw_top(AppState* app) {
         }
     }
 
-    // Error message overlay
-    if (app->error_timer > 0) {
-        app->error_timer--;
-        C2D_Text err;
-        C2D_TextParse(&err, app->dynamic_buf, app->error_msg);
-        C2D_TextOptimize(&err);
-        C2D_DrawRectSolid(0, 200, 0.9f, TOP_SCREEN_WIDTH, 20,
-                          C2D_Color32(0xCC, 0x33, 0x33, 0xFF));
-        C2D_DrawText(&err, C2D_WithColor | C2D_AlignCenter,
-                     TOP_SCREEN_WIDTH / 2.0f, 202.0f, 1.0f,
-                     0.4f, 0.4f, CLR_TEXT_WHITE);
-    }
+    if (!dual_page) {
+        // Error message overlay
+        if (app->error_timer > 0) {
+            app->error_timer--;
+            C2D_Text err;
+            C2D_TextParse(&err, app->dynamic_buf, app->error_msg);
+            C2D_TextOptimize(&err);
+            C2D_DrawRectSolid(0, 200, 0.9f, TOP_SCREEN_WIDTH, 20,
+                              C2D_Color32(0xCC, 0x33, 0x33, 0xFF));
+            C2D_DrawText(&err, C2D_WithColor | C2D_AlignCenter,
+                         TOP_SCREEN_WIDTH / 2.0f, 202.0f, 1.0f,
+                         0.4f, 0.4f, CLR_TEXT_WHITE);
+        }
 
-    // Help text at bottom
-    C2D_DrawText(&app->help_text,
-        C2D_WithColor | C2D_AlignCenter,
-        TOP_SCREEN_WIDTH / 2.0f, 222.0f, 0.5f,
-        0.35f, 0.35f, CLR_TEXT_WHITE);
+        // Help text at bottom
+        C2D_DrawText(&app->help_text,
+            C2D_WithColor | C2D_AlignCenter,
+            TOP_SCREEN_WIDTH / 2.0f, 222.0f, 0.5f,
+            0.35f, 0.35f, CLR_TEXT_WHITE);
+    }
 }
 
 void app_draw_bottom(AppState* app) {
@@ -293,6 +387,10 @@ void app_draw_bottom(AppState* app) {
 
         case SCREEN_READER:
             reader_draw_bottom(&app->reader);
+            break;
+
+        case SCREEN_HIGHLIGHTS:
+            highlights_view_draw_bottom(&app->highlights_view, app->dynamic_buf);
             break;
 
         case SCREEN_TRANSFER: {
@@ -322,7 +420,9 @@ void app_draw_bottom(AppState* app) {
     }
 
     // Top screen off indicator (small dot bottom-right)
-    if (app->top_screen_off) {
+    bool top_off = (app->current_screen == SCREEN_READER)
+        ? (app->reader.top_mode == TOP_OFF) : app->top_screen_off;
+    if (top_off) {
         C2D_DrawRectSolid(BOT_SCREEN_WIDTH - 8, BOT_SCREEN_HEIGHT - 8,
                           0.9f, 6, 6, CLR_ACCENT);
     }
@@ -337,7 +437,7 @@ void app_cleanup(AppState* app) {
     C2D_TextBufDelete(app->static_buf);
     if (app->ptmu_ok) ptmuExit();
     if (app->gsplcd_ok) {
-        if (app->top_screen_off)
+        if (app->top_screen_off || app->reader.top_mode == TOP_OFF)
             GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
         gspLcdExit();
     }

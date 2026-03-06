@@ -185,23 +185,21 @@ endif
 #---------------------------------------------------------------------------------
 cia: all
 	@echo "Building CIA..."
-ifneq ($(strip $(APP_ICON)),)
-	@bannertool makesmdh -s "$(APP_TITLE)" -l "$(APP_DESCRIPTION)" -p "$(APP_AUTHOR)" \
-		-i $(APP_ICON) -o $(BUILD)/icon.icn
-	@makerom -f cia -o $(TARGET).cia -elf $(TARGET).elf -rsf $(APP_RSF) \
-		-icon $(BUILD)/icon.icn -target t \
-		-DAPP_TITLE="$(APP_TITLE)" \
-		-DAPP_PRODUCT_CODE="$(APP_PRODUCT_CODE)" \
-		-DAPP_UNIQUE_ID="$(APP_UNIQUE_ID)" \
-		-DAPP_ROMFS="$(CURDIR)/$(ROMFS)"
-else
-	@makerom -f cia -o $(TARGET).cia -elf $(TARGET).elf -rsf $(APP_RSF) \
+	@bannertool makebanner -i $(TOPDIR)/assets/banner.png -a $(TOPDIR)/assets/banner.wav \
+		-o $(BUILD)/banner.bnr
+	@$(DEVKITARM)/bin/arm-none-eabi-strip --strip-unneeded -o $(TARGET)-stripped.elf $(TARGET).elf
+	@makerom -f cia -o $(TARGET).cia \
+		-elf $(TARGET)-stripped.elf \
+		-rsf $(APP_RSF) \
+		-icon $(OUTPUT).smdh \
+		-banner $(BUILD)/banner.bnr \
 		-target t \
+		-exefslogo \
+		-desc app:7 \
 		-DAPP_TITLE="$(APP_TITLE)" \
 		-DAPP_PRODUCT_CODE="$(APP_PRODUCT_CODE)" \
-		-DAPP_UNIQUE_ID="$(APP_UNIQUE_ID)" \
-		-DAPP_ROMFS="$(CURDIR)/$(ROMFS)"
-endif
+		-DAPP_UNIQUE_ID="$(APP_UNIQUE_ID)"
+	@rm -f $(TARGET)-stripped.elf
 	@echo "Built $(TARGET).cia"
 
 #---------------------------------------------------------------------------------

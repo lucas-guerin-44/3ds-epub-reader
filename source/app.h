@@ -5,6 +5,7 @@
 #include <citro2d.h>
 #include "ui_library.h"
 #include "ui_reader.h"
+#include "ui_highlights.h"
 #include "httpd.h"
 
 // Screen dimensions
@@ -30,7 +31,8 @@
 typedef enum {
     SCREEN_LIBRARY,
     SCREEN_READER,
-    SCREEN_TRANSFER
+    SCREEN_TRANSFER,
+    SCREEN_HIGHLIGHTS
 } ScreenID;
 
 typedef struct {
@@ -49,6 +51,7 @@ typedef struct {
     // Screen states
     LibraryState library;
     ReaderState  reader;
+    HighlightsViewState highlights_view;
     HttpServer   httpd;
 
     // Error display
@@ -57,6 +60,7 @@ typedef struct {
 
     // Rendering
     bool needs_redraw;
+    bool needs_save;  // deferred save flag (set by APT hook)
 
     // Loading state
     bool loading;
@@ -72,8 +76,9 @@ typedef struct {
     bool top_screen_off;
     bool gsplcd_ok;
 
-    // Bottom screen clear color (changes with reader dark mode)
+    // Screen clear colors (change with reader dark mode / dual-page mode)
     u32 bottom_clear_color;
+    u32 top_clear_color;
 
     // System hooks
     aptHookCookie apt_hook;

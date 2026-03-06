@@ -6,6 +6,23 @@
 
 #include "app.h"
 
+// Override default libctru init/exit for CIA compatibility
+void __appInit(void) {
+    srvInit();
+    aptInit();
+    hidInit();
+    fsInit();
+    archiveMountSdmc();
+}
+
+void __appExit(void) {
+    archiveUnmountAll();
+    fsExit();
+    hidExit();
+    aptExit();
+    srvExit();
+}
+
 int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
@@ -34,12 +51,13 @@ int main(int argc, char* argv[]) {
         app_update(&app, kDown, kHeld, &touch);
 
         // Only redraw when something changed (saves battery)
-        if (kDown || app.needs_redraw) {
+        // kHeld & KEY_TOUCH needed for touch-drag selection redraws
+        if (kDown || (kHeld & KEY_TOUCH) || app.needs_redraw) {
             app.needs_redraw = false;
 
             C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
 
-            C2D_TargetClear(app.top, CLR_BG_DARK);
+            C2D_TargetClear(app.top, app.top_clear_color);
             C2D_SceneBegin(app.top);
             app_draw_top(&app);
 

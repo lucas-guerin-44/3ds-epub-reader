@@ -135,6 +135,7 @@ int library_update(LibraryState* lib, u32 kDown, touchPosition* touch) {
             const char* path = lib->books[lib->selected].filepath;
             util_delete_file(path);
             progress_delete(path);
+            highlights_delete(path);
             lib->delete_confirm = false;
             lib->needs_refresh = true;
         } else {

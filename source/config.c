@@ -140,3 +140,122 @@ bool progress_delete(const char* book_path) {
     cJSON_Delete(root);
     return ok;
 }
+
+// --- Highlight persistence ---
+
+bool highlights_load(const char* book_path, HighlightStore* store) {
+    memset(store, 0, sizeof(HighlightStore));
+
+    char* json_str = read_json_file(HIGHLIGHTS_PATH);
+    if (!json_str) return false;
+
+    cJSON* root = cJSON_Parse(json_str);
+    free(json_str);
+    if (!root) return false;
+
+    char key[32];
+    get_book_key(book_path, key, sizeof(key));
+    cJSON* entry = cJSON_GetObjectItemCaseSensitive(root, key);
+    if (!entry) {
+        cJSON_Delete(root);
+        return false;
+    }
+
+    cJSON* arr = cJSON_GetObjectItemCaseSensitive(entry, "highlights");
+    if (!cJSON_IsArray(arr)) {
+        cJSON_Delete(root);
+        return false;
+    }
+
+    cJSON* item;
+    cJSON_ArrayForEach(item, arr) {
+        if (store->count >= MAX_HIGHLIGHTS) break;
+        Highlight* h = &store->items[store->count];
+        cJSON* ch = cJSON_GetObjectItemCaseSensitive(item, "chapter");
+        cJSON* s  = cJSON_GetObjectItemCaseSensitive(item, "start");
+        cJSON* e  = cJSON_GetObjectItemCaseSensitive(item, "end");
+        cJSON* t  = cJSON_GetObjectItemCaseSensitive(item, "text");
+        if (cJSON_IsNumber(ch)) h->chapter = ch->valueint;
+        if (cJSON_IsNumber(s))  h->start_offset = s->valueint;
+        if (cJSON_IsNumber(e))  h->end_offset = e->valueint;
+        if (cJSON_IsString(t)) {
+            strncpy(h->snippet, t->valuestring, MAX_SNIPPET_LEN - 1);
+            h->snippet[MAX_SNIPPET_LEN - 1] = '\0';
+        }
+        store->count++;
+    }
+
+    cJSON_Delete(root);
+    store->dirty = false;
+    return store->count > 0;
+}
+
+bool highlights_save(const char* book_path, const HighlightStore* store) {
+    cJSON* root = NULL;
+    char* json_str = read_json_file(HIGHLIGHTS_PATH);
+    if (json_str) {
+        root = cJSON_Parse(json_str);
+        free(json_str);
+    }
+    if (!root) root = cJSON_CreateObject();
+
+    char key[32];
+    get_book_key(book_path, key, sizeof(key));
+    cJSON_DeleteItemFromObjectCaseSensitive(root, key);
+
+    cJSON* entry = cJSON_CreateObject();
+    cJSON* arr = cJSON_CreateArray();
+    for (int i = 0; i < store->count; i++) {
+        const Highlight* h = &store->items[i];
+        cJSON* item = cJSON_CreateObject();
+        cJSON_AddNumberToObject(item, "chapter", h->chapter);
+        cJSON_AddNumberToObject(item, "start", h->start_offset);
+        cJSON_AddNumberToObject(item, "end", h->end_offset);
+        cJSON_AddStringToObject(item, "text", h->snippet);
+        cJSON_AddItemToArray(arr, item);
+    }
+    cJSON_AddItemToObject(entry, "highlights", arr);
+    cJSON_AddItemToObject(root, key, entry);
+
+    char* out = cJSON_PrintUnformatted(root);
+    bool ok = false;
+    if (out) {
+        ok = write_json_file(HIGHLIGHTS_PATH, out);
+        free(out);
+    }
+
+    cJSON_Delete(root);
+    return ok;
+}
+
+bool highlights_delete(const char* book_path) {
+    cJSON* root = NULL;
+    char* json_str = read_json_file(HIGHLIGHTS_PATH);
+    if (json_str) {
+        root = cJSON_Parse(json_str);
+        free(json_str);
+    }
+    if (!root) return false;
+
+    char key[32];
+    get_book_key(book_path, key, sizeof(key));
+    cJSON_DeleteItemFromObjectCaseSensitive(root, key);
+
+    char* out = cJSON_PrintUnformatted(root);
+    bool ok = false;
+    if (out) {
+        ok = write_json_file(HIGHLIGHTS_PATH, out);
+        free(out);
+    }
+
+    cJSON_Delete(root);
+    return ok;
+}
+
+void highlights_export_append(const char* book_title, const char* chapter_name,
+                              const char* snippet) {
+    FILE* f = fopen(HIGHLIGHTS_EXPORT, "a");
+    if (!f) return;
+    fprintf(f, "=== %s ===\n%s\n\"%s\"\n---\n", book_title, chapter_name, snippet);
+    fclose(f);
+}
