@@ -4,6 +4,24 @@
 #include <stdio.h>
 #include <string.h>
 #include <3ds/services/ptmu.h>
+#include <3ds/services/gsplcd.h>
+
+static void save_reader_progress(AppState* app) {
+    if (app->reader.book_loaded) {
+        progress_save(app->reader.book.filepath,
+                      app->reader.current_chapter,
+                      app->reader.current_page,
+                      app->reader.font_scale,
+                      app->reader.orientation);
+    }
+}
+
+static void apt_hook_callback(APT_HookType hook, void* param) {
+    AppState* app = (AppState*)param;
+    if (hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP) {
+        save_reader_progress(app);
+    }
+}
 
 void app_init(AppState* app) {
     memset(app, 0, sizeof(AppState));
@@ -33,6 +51,12 @@ void app_init(AppState* app) {
     // Init battery monitoring
     app->ptmu_ok = (R_SUCCEEDED(ptmuInit()));
     app->battery_poll_timer = 0;
+
+    // Init LCD control (for top screen sleep)
+    app->gsplcd_ok = (R_SUCCEEDED(gspLcdInit()));
+
+    // Hook suspend/sleep to auto-save progress
+    aptHook(&app->apt_hook, apt_hook_callback, app);
 }
 
 void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
@@ -50,6 +74,16 @@ void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
     if (app->error_timer > 0 || app->loading)
         app->needs_redraw = true;
 
+    // SELECT: toggle top screen backlight
+    if ((kDown & KEY_SELECT) && app->gsplcd_ok) {
+        app->top_screen_off = !app->top_screen_off;
+        if (app->top_screen_off)
+            GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP);
+        else
+            GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
+        app->needs_redraw = true;
+    }
+
     switch (app->current_screen) {
         case SCREEN_LIBRARY: {
             // Deferred book open: first frame sets loading flag,
@@ -57,8 +91,14 @@ void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
             if (app->loading) {
                 const char* path = app->library.books[app->loading_book_idx].filepath;
                 int ch = 0, pg = 0;
-                progress_load(path, &ch, &pg);
+                float fs = READER_FONT_SCALE;
+                int orient = ORIENT_HORIZONTAL;
+                progress_load(path, &ch, &pg, &fs, &orient);
                 if (reader_open(&app->reader, path, ch, pg)) {
+                    // Restore saved font scale and orientation
+                    app->reader.font_scale = fs;
+                    app->reader.orientation = orient;
+                    reader_relayout(&app->reader);
                     app->current_screen = SCREEN_READER;
                 } else {
                     snprintf(app->error_msg, sizeof(app->error_msg),
@@ -83,11 +123,13 @@ void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
         case SCREEN_READER:
             if (app->reader.needs_redraw)
                 app->needs_redraw = true;
+            // Auto-save on chapter change
+            if (app->reader.chapter_changed) {
+                save_reader_progress(app);
+                app->reader.chapter_changed = false;
+            }
             if (reader_update(&app->reader, kDown, touch)) {
-                // Save reading progress before closing
-                progress_save(app->reader.book.filepath,
-                              app->reader.current_chapter,
-                              app->reader.current_page);
+                save_reader_progress(app);
                 reader_close(&app->reader);
                 app->current_screen = SCREEN_LIBRARY;
                 app->library.needs_refresh = true;
@@ -243,7 +285,7 @@ void app_draw_bottom(AppState* app) {
                          0.5f, 0.5f, CLR_TEXT_WHITE);
 
             C2D_Text msg;
-            char url[128];
+            char url[256];
             snprintf(url, sizeof(url),
                 "Open in your browser:\n\n"
                 "http://%s:%d\n\n"
@@ -259,12 +301,25 @@ void app_draw_bottom(AppState* app) {
             break;
         }
     }
+
+    // Top screen off indicator (small dot bottom-right)
+    if (app->top_screen_off) {
+        C2D_DrawRectSolid(BOT_SCREEN_WIDTH - 8, BOT_SCREEN_HEIGHT - 8,
+                          0.9f, 6, 6, CLR_ACCENT);
+    }
 }
 
 void app_cleanup(AppState* app) {
+    aptUnhook(&app->apt_hook);
+    save_reader_progress(app);
     reader_close(&app->reader);
     httpd_shutdown(&app->httpd);
     C2D_TextBufDelete(app->dynamic_buf);
     C2D_TextBufDelete(app->static_buf);
     if (app->ptmu_ok) ptmuExit();
+    if (app->gsplcd_ok) {
+        if (app->top_screen_off)
+            GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
+        gspLcdExit();
+    }
 }

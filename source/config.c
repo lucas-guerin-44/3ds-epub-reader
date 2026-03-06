@@ -39,10 +39,8 @@ static void get_book_key(const char* book_path, char* key, size_t key_size) {
     snprintf(key, key_size, "%08x", hash);
 }
 
-bool progress_load(const char* book_path, int* chapter, int* page) {
-    *chapter = 0;
-    *page = 0;
-
+bool progress_load(const char* book_path, int* chapter, int* page,
+                   float* font_scale, int* orientation) {
     char* json_str = read_json_file(PROGRESS_PATH);
     if (!json_str) return false;
 
@@ -54,18 +52,26 @@ bool progress_load(const char* book_path, int* chapter, int* page) {
     get_book_key(book_path, key, sizeof(key));
 
     cJSON* entry = cJSON_GetObjectItemCaseSensitive(root, key);
-    if (entry) {
-        cJSON* ch = cJSON_GetObjectItemCaseSensitive(entry, "chapter");
-        cJSON* pg = cJSON_GetObjectItemCaseSensitive(entry, "page");
-        if (cJSON_IsNumber(ch)) *chapter = ch->valueint;
-        if (cJSON_IsNumber(pg)) *page = pg->valueint;
+    if (!entry) {
+        cJSON_Delete(root);
+        return false;
     }
+
+    cJSON* ch = cJSON_GetObjectItemCaseSensitive(entry, "chapter");
+    cJSON* pg = cJSON_GetObjectItemCaseSensitive(entry, "page");
+    cJSON* fs = cJSON_GetObjectItemCaseSensitive(entry, "font_scale");
+    cJSON* or_ = cJSON_GetObjectItemCaseSensitive(entry, "orientation");
+    if (cJSON_IsNumber(ch)) *chapter = ch->valueint;
+    if (cJSON_IsNumber(pg)) *page = pg->valueint;
+    if (font_scale && cJSON_IsNumber(fs)) *font_scale = (float)fs->valuedouble;
+    if (orientation && cJSON_IsNumber(or_)) *orientation = or_->valueint;
 
     cJSON_Delete(root);
     return true;
 }
 
-bool progress_save(const char* book_path, int chapter, int page) {
+bool progress_save(const char* book_path, int chapter, int page,
+                   float font_scale, int orientation) {
     // Load existing progress file
     cJSON* root = NULL;
     char* json_str = read_json_file(PROGRESS_PATH);
@@ -87,6 +93,8 @@ bool progress_save(const char* book_path, int chapter, int page) {
     cJSON* entry = cJSON_CreateObject();
     cJSON_AddNumberToObject(entry, "chapter", chapter);
     cJSON_AddNumberToObject(entry, "page", page);
+    cJSON_AddNumberToObject(entry, "font_scale", font_scale);
+    cJSON_AddNumberToObject(entry, "orientation", orientation);
     cJSON_AddItemToObject(root, key, entry);
 
     // Write back

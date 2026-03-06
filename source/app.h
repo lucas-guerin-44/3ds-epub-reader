@@ -63,6 +63,13 @@ typedef struct {
     u8  battery_charging;
     int battery_poll_timer;
     bool ptmu_ok;
+
+    // Top screen sleep
+    bool top_screen_off;
+    bool gsplcd_ok;
+
+    // System hooks
+    aptHookCookie apt_hook;
 } AppState;
 
 void app_init(AppState* app);

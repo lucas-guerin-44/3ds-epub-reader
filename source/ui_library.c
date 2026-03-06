@@ -30,7 +30,8 @@ void library_refresh(LibraryState* lib) {
         lib->books[i].saved_page = 0;
         progress_load(lib->books[i].filepath,
                       &lib->books[i].saved_chapter,
-                      &lib->books[i].saved_page);
+                      &lib->books[i].saved_page,
+                      NULL, NULL);
     }
 
     if (lib->selected >= lib->book_count)

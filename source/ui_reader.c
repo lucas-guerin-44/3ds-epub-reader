@@ -174,6 +174,14 @@ void reader_close(ReaderState* reader) {
     reader->chapter_loaded = false;
 }
 
+void reader_relayout(ReaderState* reader) {
+    calc_layout(reader);
+    compute_pages(reader);
+    reader->rendered_page = -1;
+    if (reader->current_page >= reader->total_pages)
+        reader->current_page = reader->total_pages - 1;
+}
+
 static void next_page(ReaderState* r) {
     r->page_turn_timer = 6;
     r->page_turn_dir = 1;
@@ -183,10 +191,11 @@ static void next_page(ReaderState* r) {
         r->current_chapter++;
         r->current_page = 0;
         if (!load_chapter(r)) {
-            // Failed to load next chapter, stay where we are
             r->current_chapter--;
             r->current_page = r->total_pages - 1;
             load_chapter(r);
+        } else {
+            r->chapter_changed = true;
         }
     }
 }
@@ -200,12 +209,12 @@ static void prev_page(ReaderState* r) {
         r->current_chapter--;
         r->current_page = 0;
         if (!load_chapter(r)) {
-            // Failed, go back
             r->current_chapter++;
             r->current_page = 0;
             load_chapter(r);
         } else {
             r->current_page = r->total_pages - 1;
+            r->chapter_changed = true;
         }
     }
 }
@@ -383,22 +392,6 @@ void reader_draw_bottom(ReaderState* reader) {
     if (reader->orientation == ORIENT_VERTICAL) {
         C2D_ViewRotate(M_PI / 2.0f);
         C2D_ViewTranslate(0, -BOT_SCREEN_WIDTH);
-    }
-
-    // Chapter title header
-    if (reader->overlay_buf) {
-        C2D_DrawRectSolid(0, 0, 0.6f, reader->viewport_w, READER_HEADER_H,
-                          C2D_Color32(0xF0, 0xEE, 0xE6, 0xFF));
-        C2D_DrawRectSolid(0, READER_HEADER_H - 1, 0.6f,
-                          reader->viewport_w, 1,
-                          C2D_Color32(0xD0, 0xD0, 0xD0, 0xFF));
-        C2D_TextBufClear(reader->overlay_buf);
-        C2D_Text hdr;
-        C2D_TextParse(&hdr, reader->overlay_buf,
-                      reader->book.chapter_names[reader->current_chapter]);
-        C2D_TextOptimize(&hdr);
-        C2D_DrawText(&hdr, C2D_WithColor, 4.0f, 1.0f, 0.7f,
-                     0.3f, 0.3f, C2D_Color32(0x80, 0x80, 0x80, 0xFF));
     }
 
     // Draw current page text

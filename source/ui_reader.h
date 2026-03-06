@@ -7,8 +7,7 @@
 #include "epub.h"
 
 #define READER_MARGIN_X  6.0f
-#define READER_HEADER_H  14.0f
-#define READER_MARGIN_Y  READER_HEADER_H
+#define READER_MARGIN_Y  0.0f
 #define READER_FONT_SCALE 0.45f
 
 typedef enum {
@@ -48,6 +47,7 @@ typedef struct {
     int  page_turn_timer;
     int  page_turn_dir;   // +1 forward, -1 backward
     bool needs_redraw;
+    bool chapter_changed; // set when chapter loads, cleared by app after saving
 } ReaderState;
 
 // Open a book and start reading from the given chapter/page
@@ -56,6 +56,9 @@ bool reader_open(ReaderState* reader, const char* epub_path,
 
 // Close the current book
 void reader_close(ReaderState* reader);
+
+// Recalculate layout and pages (call after changing font_scale or orientation)
+void reader_relayout(ReaderState* reader);
 
 // Handle input. Returns true if user wants to exit reader.
 bool reader_update(ReaderState* reader, u32 kDown, touchPosition* touch);
