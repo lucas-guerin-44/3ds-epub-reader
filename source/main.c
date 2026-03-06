@@ -6,6 +6,23 @@
 
 #include "app.h"
 
+// Override default libctru init/exit for CIA compatibility
+void __appInit(void) {
+    srvInit();
+    aptInit();
+    hidInit();
+    fsInit();
+    archiveMountSdmc();
+}
+
+void __appExit(void) {
+    archiveUnmountAll();
+    fsExit();
+    hidExit();
+    aptExit();
+    srvExit();
+}
+
 int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
@@ -33,12 +50,11 @@ int main(int argc, char* argv[]) {
 
         app_update(&app, kDown, kHeld, &touch);
 
-        // Always begin/end a frame so citro3d's GPU state stays consistent
-        // across APT transitions (Home button). Only redraw when needed.
-        C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-
+        // Only redraw when something changed (saves battery)
         if (kDown || (kHeld & KEY_TOUCH) || app.needs_redraw) {
             app.needs_redraw = false;
+
+            C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
 
             C2D_TargetClear(app.top, app.top_clear_color);
             C2D_SceneBegin(app.top);
@@ -47,9 +63,11 @@ int main(int argc, char* argv[]) {
             C2D_TargetClear(app.bottom, app.bottom_clear_color);
             C2D_SceneBegin(app.bottom);
             app_draw_bottom(&app);
-        }
 
-        C3D_FrameEnd(0);
+            C3D_FrameEnd(0);
+        } else {
+            gspWaitForVBlank();
+        }
     }
 
     // Cleanup

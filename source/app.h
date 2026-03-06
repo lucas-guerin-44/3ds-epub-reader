@@ -60,7 +60,8 @@ typedef struct {
 
     // Rendering
     bool needs_redraw;
-    bool needs_save;  // deferred save flag (set by APT hook)
+    bool needs_save;       // deferred save flag (set by APT hook)
+    bool needs_lcd_reapply; // re-apply backlight state after resume
 
     // Loading state
     bool loading;
@@ -74,7 +75,6 @@ typedef struct {
 
     // Top screen sleep
     bool top_screen_off;
-    bool gsplcd_ok;
 
     // Screen clear colors (change with reader dark mode / dual-page mode)
     u32 bottom_clear_color;

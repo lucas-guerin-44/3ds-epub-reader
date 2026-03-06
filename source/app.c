@@ -6,6 +6,18 @@
 #include <3ds/services/ptmu.h>
 #include <3ds/services/gsplcd.h>
 
+// Init gsp::Lcd, make the call, immediately close — avoids holding
+// the handle open which deadlocks APT transitions (Home button).
+static void lcd_set_backlight(bool on) {
+    if (R_SUCCEEDED(gspLcdInit())) {
+        if (on)
+            GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
+        else
+            GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP);
+        gspLcdExit();
+    }
+}
+
 static void save_reader_progress(AppState* app) {
     if (app->reader.book_loaded) {
         progress_save(app->reader.book.filepath,
@@ -22,13 +34,13 @@ static void apt_hook_callback(APT_HookType hook, void* param) {
     switch (hook) {
         case APTHOOK_ONSUSPEND:
         case APTHOOK_ONSLEEP:
-            // Set flag - save in main loop instead of during APT signal
             app->needs_save = true;
             break;
         case APTHOOK_ONRESTORE:
         case APTHOOK_ONWAKEUP:
-            // Force full redraw after returning from Home menu
+            // Re-apply backlight state on next main loop iteration
             app->needs_redraw = true;
+            app->needs_lcd_reapply = true;
             break;
         default:
             break;
@@ -66,9 +78,6 @@ void app_init(AppState* app) {
     app->ptmu_ok = (R_SUCCEEDED(ptmuInit()));
     app->battery_poll_timer = 0;
 
-    // Init LCD control (for top screen sleep)
-    app->gsplcd_ok = (R_SUCCEEDED(gspLcdInit()));
-
     // Hook suspend/sleep to auto-save progress
     aptHook(&app->apt_hook, apt_hook_callback, app);
 }
@@ -78,6 +87,15 @@ void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
     if (app->needs_save) {
         save_reader_progress(app);
         app->needs_save = false;
+    }
+
+    // Re-apply backlight state after returning from Home Menu
+    if (app->needs_lcd_reapply) {
+        bool top_off = (app->current_screen == SCREEN_READER)
+            ? (app->reader.top_mode == TOP_OFF) : app->top_screen_off;
+        if (top_off)
+            lcd_set_backlight(false);
+        app->needs_lcd_reapply = false;
     }
 
     // Poll battery every ~1 second
@@ -96,7 +114,7 @@ void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
         app->needs_redraw = true;
 
     // SELECT: cycle top screen mode (reader) or toggle backlight (other screens)
-    if ((kDown & KEY_SELECT) && app->gsplcd_ok) {
+    if (kDown & KEY_SELECT) {
         if (app->current_screen == SCREEN_READER) {
             // 3-state cycle: INFO → DUALPAGE → OFF → INFO
             switch (app->reader.top_mode) {
@@ -108,19 +126,16 @@ void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
                 case TOP_DUALPAGE:
                     app->reader.top_mode = TOP_OFF;
                     app->reader.rendered_page = -1;  // bottom reverts to current_page
-                    GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP);
+                    lcd_set_backlight(false);
                     break;
                 case TOP_OFF:
                     app->reader.top_mode = TOP_INFO;
-                    GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
+                    lcd_set_backlight(true);
                     break;
             }
         } else {
             app->top_screen_off = !app->top_screen_off;
-            if (app->top_screen_off)
-                GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP);
-            else
-                GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
+            lcd_set_backlight(!app->top_screen_off);
         }
         app->needs_redraw = true;
     }
@@ -194,8 +209,8 @@ void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
             ReaderAction action = reader_update(&app->reader, kDown, kHeld, touch);
             if (action == READER_EXIT) {
                 // Restore top backlight if it was off
-                if (app->reader.top_mode == TOP_OFF && app->gsplcd_ok)
-                    GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
+                if (app->reader.top_mode == TOP_OFF)
+                    lcd_set_backlight(true);
                 app->reader.top_mode = TOP_INFO;
                 save_reader_progress(app);
                 reader_close(&app->reader);
@@ -445,9 +460,6 @@ void app_cleanup(AppState* app) {
     C2D_TextBufDelete(app->dynamic_buf);
     C2D_TextBufDelete(app->static_buf);
     if (app->ptmu_ok) ptmuExit();
-    if (app->gsplcd_ok) {
-        if (app->top_screen_off || app->reader.top_mode == TOP_OFF)
-            GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
-        gspLcdExit();
-    }
+    if (app->top_screen_off || app->reader.top_mode == TOP_OFF)
+        lcd_set_backlight(true);
 }
