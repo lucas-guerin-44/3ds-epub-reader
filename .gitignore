@@ -1,0 +1,7 @@
+# Build output
+build/
+*.3dsx
+*.elf
+*.smdh
+*.lst
+*.map

@@ -1,0 +1,102 @@
+#include "config.h"
+#include "util.h"
+#include "cJSON.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static char* read_json_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (len <= 0 || len > 1024 * 1024) {
+        fclose(f);
+        return NULL;
+    }
+
+    char* buf = malloc(len + 1);
+    if (!buf) { fclose(f); return NULL; }
+    fread(buf, 1, len, f);
+    buf[len] = '\0';
+    fclose(f);
+    return buf;
+}
+
+static bool write_json_file(const char* path, const char* json_str) {
+    FILE* f = fopen(path, "wb");
+    if (!f) return false;
+    fputs(json_str, f);
+    fclose(f);
+    return true;
+}
+
+static void get_book_key(const char* book_path, char* key, size_t key_size) {
+    unsigned int hash = util_hash_string(book_path);
+    snprintf(key, key_size, "%08x", hash);
+}
+
+bool progress_load(const char* book_path, int* chapter, int* page) {
+    *chapter = 0;
+    *page = 0;
+
+    char* json_str = read_json_file(PROGRESS_PATH);
+    if (!json_str) return false;
+
+    cJSON* root = cJSON_Parse(json_str);
+    free(json_str);
+    if (!root) return false;
+
+    char key[32];
+    get_book_key(book_path, key, sizeof(key));
+
+    cJSON* entry = cJSON_GetObjectItemCaseSensitive(root, key);
+    if (entry) {
+        cJSON* ch = cJSON_GetObjectItemCaseSensitive(entry, "chapter");
+        cJSON* pg = cJSON_GetObjectItemCaseSensitive(entry, "page");
+        if (cJSON_IsNumber(ch)) *chapter = ch->valueint;
+        if (cJSON_IsNumber(pg)) *page = pg->valueint;
+    }
+
+    cJSON_Delete(root);
+    return true;
+}
+
+bool progress_save(const char* book_path, int chapter, int page) {
+    // Load existing progress file
+    cJSON* root = NULL;
+    char* json_str = read_json_file(PROGRESS_PATH);
+    if (json_str) {
+        root = cJSON_Parse(json_str);
+        free(json_str);
+    }
+    if (!root) {
+        root = cJSON_CreateObject();
+    }
+
+    char key[32];
+    get_book_key(book_path, key, sizeof(key));
+
+    // Remove old entry if exists
+    cJSON_DeleteItemFromObjectCaseSensitive(root, key);
+
+    // Add new entry
+    cJSON* entry = cJSON_CreateObject();
+    cJSON_AddNumberToObject(entry, "chapter", chapter);
+    cJSON_AddNumberToObject(entry, "page", page);
+    cJSON_AddItemToObject(root, key, entry);
+
+    // Write back
+    char* out = cJSON_PrintUnformatted(root);
+    bool ok = false;
+    if (out) {
+        ok = write_json_file(PROGRESS_PATH, out);
+        free(out);
+    }
+
+    cJSON_Delete(root);
+    return ok;
+}
