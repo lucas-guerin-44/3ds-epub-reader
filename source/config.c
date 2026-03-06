@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static char* read_json_file(const char* path) {
     FILE* f = fopen(path, "rb");
@@ -40,7 +41,8 @@ static void get_book_key(const char* book_path, char* key, size_t key_size) {
 }
 
 bool progress_load(const char* book_path, int* chapter, int* page,
-                   float* font_scale, int* orientation) {
+                   float* font_scale, int* orientation,
+                   int* dark_mode, int* last_read) {
     char* json_str = read_json_file(PROGRESS_PATH);
     if (!json_str) return false;
 
@@ -61,17 +63,21 @@ bool progress_load(const char* book_path, int* chapter, int* page,
     cJSON* pg = cJSON_GetObjectItemCaseSensitive(entry, "page");
     cJSON* fs = cJSON_GetObjectItemCaseSensitive(entry, "font_scale");
     cJSON* or_ = cJSON_GetObjectItemCaseSensitive(entry, "orientation");
+    cJSON* dm = cJSON_GetObjectItemCaseSensitive(entry, "dark_mode");
+    cJSON* lr = cJSON_GetObjectItemCaseSensitive(entry, "last_read");
     if (cJSON_IsNumber(ch)) *chapter = ch->valueint;
     if (cJSON_IsNumber(pg)) *page = pg->valueint;
     if (font_scale && cJSON_IsNumber(fs)) *font_scale = (float)fs->valuedouble;
     if (orientation && cJSON_IsNumber(or_)) *orientation = or_->valueint;
+    if (dark_mode && cJSON_IsNumber(dm)) *dark_mode = dm->valueint;
+    if (last_read && cJSON_IsNumber(lr)) *last_read = lr->valueint;
 
     cJSON_Delete(root);
     return true;
 }
 
 bool progress_save(const char* book_path, int chapter, int page,
-                   float font_scale, int orientation) {
+                   float font_scale, int orientation, int dark_mode) {
     // Load existing progress file
     cJSON* root = NULL;
     char* json_str = read_json_file(PROGRESS_PATH);
@@ -95,9 +101,35 @@ bool progress_save(const char* book_path, int chapter, int page,
     cJSON_AddNumberToObject(entry, "page", page);
     cJSON_AddNumberToObject(entry, "font_scale", font_scale);
     cJSON_AddNumberToObject(entry, "orientation", orientation);
+    cJSON_AddNumberToObject(entry, "dark_mode", dark_mode);
+    cJSON_AddNumberToObject(entry, "last_read", (double)time(NULL));
     cJSON_AddItemToObject(root, key, entry);
 
     // Write back
+    char* out = cJSON_PrintUnformatted(root);
+    bool ok = false;
+    if (out) {
+        ok = write_json_file(PROGRESS_PATH, out);
+        free(out);
+    }
+
+    cJSON_Delete(root);
+    return ok;
+}
+
+bool progress_delete(const char* book_path) {
+    cJSON* root = NULL;
+    char* json_str = read_json_file(PROGRESS_PATH);
+    if (json_str) {
+        root = cJSON_Parse(json_str);
+        free(json_str);
+    }
+    if (!root) return false;
+
+    char key[32];
+    get_book_key(book_path, key, sizeof(key));
+    cJSON_DeleteItemFromObjectCaseSensitive(root, key);
+
     char* out = cJSON_PrintUnformatted(root);
     bool ok = false;
     if (out) {

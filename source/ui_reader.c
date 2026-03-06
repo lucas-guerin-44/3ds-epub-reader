@@ -185,6 +185,7 @@ void reader_relayout(ReaderState* reader) {
 static void next_page(ReaderState* r) {
     r->page_turn_timer = 6;
     r->page_turn_dir = 1;
+    r->page_turn_count++;
     if (r->current_page < r->total_pages - 1) {
         r->current_page++;
     } else if (r->current_chapter < r->book.chapter_count - 1) {
@@ -203,6 +204,7 @@ static void next_page(ReaderState* r) {
 static void prev_page(ReaderState* r) {
     r->page_turn_timer = 6;
     r->page_turn_dir = -1;
+    r->page_turn_count++;
     if (r->current_page > 0) {
         r->current_page--;
     } else if (r->current_chapter > 0) {
@@ -219,7 +221,7 @@ static void prev_page(ReaderState* r) {
     }
 }
 
-bool reader_update(ReaderState* reader, u32 kDown, touchPosition* touch) {
+bool reader_update(ReaderState* reader, u32 kDown, u32 kHeld, touchPosition* touch) {
     if (!reader->book_loaded)
         return true;
 
@@ -239,18 +241,54 @@ bool reader_update(ReaderState* reader, u32 kDown, touchPosition* touch) {
         key_font_down = KEY_DLEFT;
     }
 
-    // Page turning
-    if (kDown & (KEY_R | key_next))
-        next_page(reader);
-    if (kDown & (KEY_L | key_prev))
-        prev_page(reader);
+    // Chapter jump: hold X + D-pad next/prev
+    bool chapter_jumped = false;
+    if ((kHeld & KEY_X) && (kDown & key_next)) {
+        if (reader->current_chapter < reader->book.chapter_count - 1) {
+            reader->current_chapter++;
+            reader->current_page = 0;
+            if (!load_chapter(reader)) {
+                reader->current_chapter--;
+                load_chapter(reader);
+            }
+            reader->chapter_changed = true;
+        }
+        chapter_jumped = true;
+    } else if ((kHeld & KEY_X) && (kDown & key_prev)) {
+        if (reader->current_chapter > 0) {
+            reader->current_chapter--;
+            reader->current_page = 0;
+            if (!load_chapter(reader)) {
+                reader->current_chapter++;
+                load_chapter(reader);
+            }
+            reader->chapter_changed = true;
+        }
+        chapter_jumped = true;
+    }
+
+    // Page turning (skip if X is held to avoid conflict with chapter jump)
+    if (!chapter_jumped && !(kHeld & KEY_X)) {
+        if (kDown & (KEY_R | key_next))
+            next_page(reader);
+        if (kDown & (KEY_L | key_prev))
+            prev_page(reader);
+    }
 
     // Touch: tap right half = next, left half = prev
+    // In vertical mode the device is rotated, so use py instead of px
     if (kDown & KEY_TOUCH) {
-        if (touch->px > BOT_SCREEN_WIDTH / 2)
-            next_page(reader);
-        else
-            prev_page(reader);
+        if (reader->orientation == ORIENT_VERTICAL) {
+            if (touch->py > BOT_SCREEN_HEIGHT / 2)
+                next_page(reader);
+            else
+                prev_page(reader);
+        } else {
+            if (touch->px > BOT_SCREEN_WIDTH / 2)
+                next_page(reader);
+            else
+                prev_page(reader);
+        }
     }
 
     // Orientation toggle
@@ -262,6 +300,11 @@ bool reader_update(ReaderState* reader, u32 kDown, touchPosition* touch) {
         reader->rendered_page = -1;
         if (reader->current_page >= reader->total_pages)
             reader->current_page = reader->total_pages - 1;
+    }
+
+    // Dark mode toggle
+    if (kDown & KEY_A) {
+        reader->dark_mode = !reader->dark_mode;
     }
 
     // Font size adjustment
@@ -344,20 +387,19 @@ void reader_draw_top(ReaderState* reader, C2D_TextBuf buf) {
                      total_chapters;
     C2D_DrawRectSolid(bar_x, bar_y, 0.5f, bar_w * progress, 6, CLR_ACCENT);
 
-    // Controls help (changes with orientation)
-    const char* help = (reader->orientation == ORIENT_HORIZONTAL)
-        ? "L/R: Page  Y: Rotate  Up/Down: Font"
-        : "L/R: Page  Y: Rotate  Left/Right: Font";
-    C2D_TextParse(&text, buf, help);
+    // Controls help
+    C2D_TextParse(&text, buf,
+        "L/R:Page  A:Theme  Y:Rotate  X+D:Chapter");
     C2D_TextOptimize(&text);
     C2D_DrawText(&text, C2D_WithColor | C2D_AlignCenter,
                  TOP_SCREEN_WIDTH / 2.0f, 170.0f, 0.5f,
                  0.35f, 0.35f, CLR_TEXT_WHITE);
 
-    // Orientation indicator
-    const char* orient_str = (reader->orientation == ORIENT_HORIZONTAL)
-                             ? "Horizontal" : "Vertical";
-    C2D_TextParse(&text, buf, orient_str);
+    // Orientation + theme indicator
+    snprintf(info, sizeof(info), "%s  %s",
+             reader->orientation == ORIENT_HORIZONTAL ? "Horizontal" : "Vertical",
+             reader->dark_mode ? "Dark" : "Light");
+    C2D_TextParse(&text, buf, info);
     C2D_TextOptimize(&text);
     C2D_DrawText(&text, C2D_WithColor | C2D_AlignCenter,
                  TOP_SCREEN_WIDTH / 2.0f, 190.0f, 0.5f,
@@ -394,12 +436,13 @@ void reader_draw_bottom(ReaderState* reader) {
         C2D_ViewTranslate(0, -BOT_SCREEN_WIDTH);
     }
 
-    // Draw current page text
+    // Draw current page text (color depends on dark mode)
+    u32 text_color = reader->dark_mode ? CLR_READER_TEXT_LIGHT : CLR_TEXT_BLACK;
     C2D_DrawText(&reader->rendered_text,
                  C2D_WithColor | C2D_WordWrap,
                  READER_MARGIN_X, READER_MARGIN_Y, 0.5f,
                  reader->font_scale, reader->font_scale,
-                 CLR_TEXT_BLACK,
+                 text_color,
                  wrap_w);
 
     // Page turn edge flash
@@ -421,8 +464,14 @@ void reader_draw_bottom(ReaderState* reader) {
                    : (u8)(0xCC * reader->font_overlay_timer / 30);
         float ox = BOT_SCREEN_WIDTH / 2.0f - 40;
         float oy = BOT_SCREEN_HEIGHT / 2.0f - 12;
-        C2D_DrawRectSolid(ox, oy, 0.95f, 80, 24,
-                          C2D_Color32(0x00, 0x00, 0x00, alpha));
+        // Invert overlay colors in dark mode for visibility
+        u32 overlay_bg = reader->dark_mode
+            ? C2D_Color32(0xFF, 0xFF, 0xFF, alpha)
+            : C2D_Color32(0x00, 0x00, 0x00, alpha);
+        u32 overlay_fg = reader->dark_mode
+            ? C2D_Color32(0x00, 0x00, 0x00, alpha)
+            : C2D_Color32(0xFF, 0xFF, 0xFF, alpha);
+        C2D_DrawRectSolid(ox, oy, 0.95f, 80, 24, overlay_bg);
         if (reader->overlay_buf) {
             C2D_TextBufClear(reader->overlay_buf);
             C2D_Text ftxt;
@@ -433,8 +482,7 @@ void reader_draw_bottom(ReaderState* reader) {
             C2D_TextOptimize(&ftxt);
             C2D_DrawText(&ftxt, C2D_WithColor | C2D_AlignCenter,
                          BOT_SCREEN_WIDTH / 2.0f, oy + 4, 1.0f,
-                         0.4f, 0.4f,
-                         C2D_Color32(0xFF, 0xFF, 0xFF, alpha));
+                         0.4f, 0.4f, overlay_fg);
         }
     }
 }

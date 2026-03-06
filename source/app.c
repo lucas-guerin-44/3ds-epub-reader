@@ -12,7 +12,8 @@ static void save_reader_progress(AppState* app) {
                       app->reader.current_chapter,
                       app->reader.current_page,
                       app->reader.font_scale,
-                      app->reader.orientation);
+                      app->reader.orientation,
+                      app->reader.dark_mode ? 1 : 0);
     }
 }
 
@@ -27,6 +28,7 @@ void app_init(AppState* app) {
     memset(app, 0, sizeof(AppState));
 
     app->current_screen = SCREEN_LIBRARY;
+    app->bottom_clear_color = CLR_BG_LIGHT;
 
     // Create render targets
     app->top    = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
@@ -41,7 +43,7 @@ void app_init(AppState* app) {
     C2D_TextOptimize(&app->title_text);
 
     C2D_TextParse(&app->help_text, app->static_buf,
-        "A: Open  B: Back  X: Transfer  START: Exit");
+        "A: Open  Y: Delete  L/R: Sort  X: Transfer");
     C2D_TextOptimize(&app->help_text);
 
     // Init SD card directories and library
@@ -60,8 +62,6 @@ void app_init(AppState* app) {
 }
 
 void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
-    (void)kHeld;
-
     // Poll battery every ~1 second
     if (app->ptmu_ok && --app->battery_poll_timer <= 0) {
         PTMU_GetBatteryLevel(&app->battery_level);
@@ -86,6 +86,8 @@ void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
 
     switch (app->current_screen) {
         case SCREEN_LIBRARY: {
+            app->bottom_clear_color = CLR_BG_LIGHT;
+
             // Deferred book open: first frame sets loading flag,
             // second frame actually opens (so "Opening..." is visible)
             if (app->loading) {
@@ -93,11 +95,13 @@ void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
                 int ch = 0, pg = 0;
                 float fs = READER_FONT_SCALE;
                 int orient = ORIENT_HORIZONTAL;
-                progress_load(path, &ch, &pg, &fs, &orient);
+                int dm = 0;
+                progress_load(path, &ch, &pg, &fs, &orient, &dm, NULL);
                 if (reader_open(&app->reader, path, ch, pg)) {
-                    // Restore saved font scale and orientation
+                    // Restore saved font scale, orientation, and dark mode
                     app->reader.font_scale = fs;
                     app->reader.orientation = orient;
+                    app->reader.dark_mode = dm ? true : false;
                     reader_relayout(&app->reader);
                     app->current_screen = SCREEN_READER;
                 } else {
@@ -121,22 +125,37 @@ void app_update(AppState* app, u32 kDown, u32 kHeld, touchPosition* touch) {
         }
 
         case SCREEN_READER:
+            // Update bottom screen clear color based on dark mode
+            app->bottom_clear_color = app->reader.dark_mode
+                ? CLR_READER_BG_DARK : CLR_BG_LIGHT;
+
             if (app->reader.needs_redraw)
                 app->needs_redraw = true;
+
             // Auto-save on chapter change
             if (app->reader.chapter_changed) {
                 save_reader_progress(app);
                 app->reader.chapter_changed = false;
             }
-            if (reader_update(&app->reader, kDown, touch)) {
+
+            // Auto-save every 10 page turns
+            if (app->reader.page_turn_count >= 10) {
+                save_reader_progress(app);
+                app->reader.page_turn_count = 0;
+            }
+
+            if (reader_update(&app->reader, kDown, kHeld, touch)) {
                 save_reader_progress(app);
                 reader_close(&app->reader);
                 app->current_screen = SCREEN_LIBRARY;
                 app->library.needs_refresh = true;
+                app->bottom_clear_color = CLR_BG_LIGHT;
             }
             break;
 
         case SCREEN_TRANSFER:
+            app->bottom_clear_color = CLR_BG_LIGHT;
+
             // Start server on entering transfer mode
             if (!app->httpd.running) {
                 httpd_init(&app->httpd, HTTPD_PORT);

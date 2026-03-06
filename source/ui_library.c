@@ -3,6 +3,7 @@
 #include "config.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 static void strip_extension(char* dest, const char* src, size_t dest_size) {
     strncpy(dest, src, dest_size - 1);
@@ -10,6 +11,40 @@ static void strip_extension(char* dest, const char* src, size_t dest_size) {
     char* dot = strrchr(dest, '.');
     if (dot)
         *dot = '\0';
+}
+
+// Sort comparison functions
+static int cmp_title_az(const void* a, const void* b) {
+    return strcasecmp(((const BookEntry*)a)->display_name,
+                      ((const BookEntry*)b)->display_name);
+}
+
+static int cmp_title_za(const void* a, const void* b) {
+    return strcasecmp(((const BookEntry*)b)->display_name,
+                      ((const BookEntry*)a)->display_name);
+}
+
+static int cmp_last_read(const void* a, const void* b) {
+    const BookEntry* ba = (const BookEntry*)a;
+    const BookEntry* bb = (const BookEntry*)b;
+    // Most recently read first; never-read (0) goes to the end
+    if (ba->last_read_time == 0 && bb->last_read_time == 0)
+        return strcasecmp(ba->display_name, bb->display_name);
+    if (ba->last_read_time == 0) return 1;
+    if (bb->last_read_time == 0) return -1;
+    if (bb->last_read_time > ba->last_read_time) return 1;
+    if (bb->last_read_time < ba->last_read_time) return -1;
+    return 0;
+}
+
+static void library_sort(LibraryState* lib) {
+    if (lib->book_count <= 1) return;
+    switch (lib->sort_mode) {
+        case SORT_TITLE_AZ:   qsort(lib->books, lib->book_count, sizeof(BookEntry), cmp_title_az); break;
+        case SORT_TITLE_ZA:   qsort(lib->books, lib->book_count, sizeof(BookEntry), cmp_title_za); break;
+        case SORT_LAST_READ:  qsort(lib->books, lib->book_count, sizeof(BookEntry), cmp_last_read); break;
+        default: break;
+    }
 }
 
 void library_init(LibraryState* lib) {
@@ -28,15 +63,20 @@ void library_refresh(LibraryState* lib) {
                         MAX_FILENAME_LEN);
         lib->books[i].saved_chapter = -1;
         lib->books[i].saved_page = 0;
+        lib->books[i].last_read_time = 0;
         progress_load(lib->books[i].filepath,
                       &lib->books[i].saved_chapter,
                       &lib->books[i].saved_page,
-                      NULL, NULL);
+                      NULL, NULL, NULL,
+                      &lib->books[i].last_read_time);
     }
+
+    library_sort(lib);
 
     if (lib->selected >= lib->book_count)
         lib->selected = lib->book_count > 0 ? lib->book_count - 1 : 0;
 
+    lib->delete_confirm = false;
     lib->needs_refresh = false;
 }
 
@@ -46,6 +86,10 @@ int library_update(LibraryState* lib, u32 kDown, touchPosition* touch) {
 
     if (lib->book_count == 0)
         return -1;
+
+    // Any navigation cancels delete confirmation
+    if (kDown & (KEY_DUP | KEY_DDOWN | KEY_A | KEY_TOUCH | KEY_L | KEY_R))
+        lib->delete_confirm = false;
 
     // D-pad navigation
     if (kDown & KEY_DUP) {
@@ -84,6 +128,35 @@ int library_update(LibraryState* lib, u32 kDown, touchPosition* touch) {
         return lib->selected;
     }
 
+    // Y button to delete (two-press confirmation)
+    if (kDown & KEY_Y) {
+        if (lib->delete_confirm) {
+            // Second press — actually delete
+            const char* path = lib->books[lib->selected].filepath;
+            util_delete_file(path);
+            progress_delete(path);
+            lib->delete_confirm = false;
+            lib->needs_refresh = true;
+        } else {
+            // First press — arm confirmation
+            lib->delete_confirm = true;
+        }
+    }
+
+    // Sort mode cycling: L = prev, R = next
+    if (kDown & KEY_R) {
+        lib->sort_mode = (lib->sort_mode + 1) % SORT_MODE_COUNT;
+        library_sort(lib);
+        lib->selected = 0;
+        lib->scroll_offset = 0;
+    }
+    if (kDown & KEY_L) {
+        lib->sort_mode = (lib->sort_mode + SORT_MODE_COUNT - 1) % SORT_MODE_COUNT;
+        library_sort(lib);
+        lib->selected = 0;
+        lib->scroll_offset = 0;
+    }
+
     return -1;
 }
 
@@ -120,11 +193,21 @@ void library_draw_top(LibraryState* lib, C2D_TextBuf buf) {
                          0.4f, 0.4f, CLR_TEXT_WHITE);
         }
 
-        C2D_TextParse(&text, buf, "Press A to read");
-        C2D_TextOptimize(&text);
-        C2D_DrawText(&text, C2D_WithColor | C2D_AlignCenter,
-                     TOP_SCREEN_WIDTH / 2.0f, 150.0f, 0.5f,
-                     0.45f, 0.45f, CLR_TEXT_WHITE);
+        // Delete confirmation message
+        if (lib->delete_confirm) {
+            C2D_TextParse(&text, buf, "Press Y again to DELETE this book");
+            C2D_TextOptimize(&text);
+            C2D_DrawText(&text, C2D_WithColor | C2D_AlignCenter,
+                         TOP_SCREEN_WIDTH / 2.0f, 150.0f, 0.5f,
+                         0.45f, 0.45f,
+                         C2D_Color32(0xE5, 0x3E, 0x3E, 0xFF));
+        } else {
+            C2D_TextParse(&text, buf, "Press A to read");
+            C2D_TextOptimize(&text);
+            C2D_DrawText(&text, C2D_WithColor | C2D_AlignCenter,
+                         TOP_SCREEN_WIDTH / 2.0f, 150.0f, 0.5f,
+                         0.45f, 0.45f, CLR_TEXT_WHITE);
+        }
     } else {
         C2D_TextParse(&text, buf, "No books in library");
         C2D_TextOptimize(&text);
@@ -148,7 +231,15 @@ void library_draw_bottom(LibraryState* lib, C2D_TextBuf buf) {
     // Header bar
     C2D_DrawRectSolid(0, 0, 0.5f, BOT_SCREEN_WIDTH, 24, CLR_ACCENT);
     char header[64];
-    snprintf(header, sizeof(header), "Library (%d)", lib->book_count);
+    const char* sort_label;
+    switch (lib->sort_mode) {
+        case SORT_TITLE_AZ:  sort_label = "A-Z"; break;
+        case SORT_TITLE_ZA:  sort_label = "Z-A"; break;
+        case SORT_LAST_READ: sort_label = "Recent"; break;
+        default:             sort_label = ""; break;
+    }
+    snprintf(header, sizeof(header), "Library (%d)  [%s]",
+             lib->book_count, sort_label);
     C2D_TextParse(&text, buf, header);
     C2D_TextOptimize(&text);
     C2D_DrawText(&text, C2D_WithColor, 8.0f, 4.0f, 0.5f,
@@ -175,8 +266,11 @@ void library_draw_bottom(LibraryState* lib, C2D_TextBuf buf) {
 
         // Highlight selected item
         if (idx == lib->selected) {
+            u32 sel_color = lib->delete_confirm
+                ? C2D_Color32(0xCC, 0x33, 0x33, 0xFF)  // red if delete pending
+                : CLR_ACCENT;
             C2D_DrawRectSolid(0, y, 0.4f, BOT_SCREEN_WIDTH, ITEM_HEIGHT,
-                              CLR_ACCENT);
+                              sel_color);
         }
 
         // Divider line

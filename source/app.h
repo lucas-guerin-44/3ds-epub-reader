@@ -23,6 +23,10 @@
 #define CLR_SELECTED    C2D_Color32(0x3A, 0x3A, 0x5C, 0xFF)
 #define CLR_DIVIDER     C2D_Color32(0x30, 0x30, 0x50, 0xFF)
 
+// Dark reading theme colors
+#define CLR_READER_BG_DARK   C2D_Color32(0x1E, 0x1E, 0x1E, 0xFF)
+#define CLR_READER_TEXT_LIGHT C2D_Color32(0xD0, 0xCC, 0xC0, 0xFF)
+
 typedef enum {
     SCREEN_LIBRARY,
     SCREEN_READER,
@@ -67,6 +71,9 @@ typedef struct {
     // Top screen sleep
     bool top_screen_off;
     bool gsplcd_ok;
+
+    // Bottom screen clear color (changes with reader dark mode)
+    u32 bottom_clear_color;
 
     // System hooks
     aptHookCookie apt_hook;

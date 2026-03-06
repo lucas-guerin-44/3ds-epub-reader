@@ -48,6 +48,8 @@ typedef struct {
     int  page_turn_dir;   // +1 forward, -1 backward
     bool needs_redraw;
     bool chapter_changed; // set when chapter loads, cleared by app after saving
+    bool dark_mode;       // dark background + light text
+    int  page_turn_count; // counts page turns for periodic auto-save
 } ReaderState;
 
 // Open a book and start reading from the given chapter/page
@@ -61,7 +63,7 @@ void reader_close(ReaderState* reader);
 void reader_relayout(ReaderState* reader);
 
 // Handle input. Returns true if user wants to exit reader.
-bool reader_update(ReaderState* reader, u32 kDown, touchPosition* touch);
+bool reader_update(ReaderState* reader, u32 kDown, u32 kHeld, touchPosition* touch);
 
 // Draw on top and bottom screens
 void reader_draw_top(ReaderState* reader, C2D_TextBuf buf);

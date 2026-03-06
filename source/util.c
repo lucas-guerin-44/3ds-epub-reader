@@ -66,6 +66,10 @@ const char* util_basename(const char* path) {
     return path;
 }
 
+bool util_delete_file(const char* path) {
+    return remove(path) == 0;
+}
+
 unsigned int util_hash_string(const char* str) {
     unsigned int hash = 2166136261u;
     while (*str) {

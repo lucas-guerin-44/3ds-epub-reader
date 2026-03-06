@@ -8,8 +8,12 @@
 
 // Load/save reading progress for a book (identified by filepath hash)
 bool progress_load(const char* book_path, int* chapter, int* page,
-                   float* font_scale, int* orientation);
+                   float* font_scale, int* orientation,
+                   int* dark_mode, int* last_read);
 bool progress_save(const char* book_path, int chapter, int page,
-                   float font_scale, int orientation);
+                   float font_scale, int orientation, int dark_mode);
+
+// Delete saved progress for a book
+bool progress_delete(const char* book_path);
 
 #endif

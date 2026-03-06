@@ -43,7 +43,7 @@ int main(int argc, char* argv[]) {
             C2D_SceneBegin(app.top);
             app_draw_top(&app);
 
-            C2D_TargetClear(app.bottom, CLR_BG_LIGHT);
+            C2D_TargetClear(app.bottom, app.bottom_clear_color);
             C2D_SceneBegin(app.bottom);
             app_draw_bottom(&app);
 

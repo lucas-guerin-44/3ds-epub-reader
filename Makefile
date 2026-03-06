@@ -20,6 +20,12 @@ endif
 TOPDIR ?= $(CURDIR)
 include $(DEVKITARM)/3ds_rules
 
+# Fix shell: use devkitPro's MSYS2 bash which has /opt/devkitpro mount
+SHELL := $(DEVKITPRO)/msys2/usr/bin/bash
+export TMPDIR := /tmp
+export TMP := /tmp
+export TEMP := /tmp
+
 #---------------------------------------------------------------------------------
 # Project configuration
 #---------------------------------------------------------------------------------
@@ -35,6 +41,11 @@ ROMFS		:=	romfs
 APP_TITLE		:= 3DS EPUB Reader
 APP_DESCRIPTION	:= Read EPUB books on your 3DS
 APP_AUTHOR		:= Lucas
+
+# CIA build settings
+APP_PRODUCT_CODE := CTR-H-EPUB
+APP_UNIQUE_ID    := 0xEB000
+APP_RSF          := $(CURDIR)/meta/app.rsf
 
 #---------------------------------------------------------------------------------
 # options for code generation
@@ -133,13 +144,12 @@ export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 export _3DSXDEPS	:=	$(if $(NO_SMDH),,$(OUTPUT).smdh)
 
 ifeq ($(strip $(ICON)),)
-	icons := $(wildcard *.png)
-	ifneq (,$(findstring $(TARGET).png,$(icons)))
+	ifneq ($(wildcard $(TOPDIR)/$(TARGET).png),)
 		export APP_ICON := $(TOPDIR)/$(TARGET).png
-	else
-		ifneq (,$(findstring icon.png,$(icons)))
-			export APP_ICON := $(TOPDIR)/icon.png
-		endif
+	else ifneq ($(wildcard $(TOPDIR)/icon.png),)
+		export APP_ICON := $(TOPDIR)/icon.png
+	else ifneq ($(wildcard $(TOPDIR)/assets/icon.png),)
+		export APP_ICON := $(TOPDIR)/assets/icon.png
 	endif
 else
 	export APP_ICON := $(TOPDIR)/$(ICON)
@@ -153,7 +163,7 @@ ifneq ($(ROMFS),)
 	export _3DSXFLAGS += --romfs=$(CURDIR)/$(ROMFS)
 endif
 
-.PHONY: all clean
+.PHONY: all clean cia
 
 #---------------------------------------------------------------------------------
 all: $(BUILD) $(GFXBUILD) $(DEPSDIR) $(ROMFS_T3XFILES) $(T3XHFILES)
@@ -173,9 +183,31 @@ $(DEPSDIR):
 endif
 
 #---------------------------------------------------------------------------------
+cia: all
+	@echo "Building CIA..."
+ifneq ($(strip $(APP_ICON)),)
+	@bannertool makesmdh -s "$(APP_TITLE)" -l "$(APP_DESCRIPTION)" -p "$(APP_AUTHOR)" \
+		-i $(APP_ICON) -o $(BUILD)/icon.icn
+	@makerom -f cia -o $(TARGET).cia -elf $(TARGET).elf -rsf $(APP_RSF) \
+		-icon $(BUILD)/icon.icn -target t \
+		-DAPP_TITLE="$(APP_TITLE)" \
+		-DAPP_PRODUCT_CODE="$(APP_PRODUCT_CODE)" \
+		-DAPP_UNIQUE_ID="$(APP_UNIQUE_ID)" \
+		-DAPP_ROMFS="$(CURDIR)/$(ROMFS)"
+else
+	@makerom -f cia -o $(TARGET).cia -elf $(TARGET).elf -rsf $(APP_RSF) \
+		-target t \
+		-DAPP_TITLE="$(APP_TITLE)" \
+		-DAPP_PRODUCT_CODE="$(APP_PRODUCT_CODE)" \
+		-DAPP_UNIQUE_ID="$(APP_UNIQUE_ID)" \
+		-DAPP_ROMFS="$(CURDIR)/$(ROMFS)"
+endif
+	@echo "Built $(TARGET).cia"
+
+#---------------------------------------------------------------------------------
 clean:
 	@echo clean ...
-	@rm -fr $(BUILD) $(TARGET).3dsx $(OUTPUT).smdh $(TARGET).elf $(GFXBUILD)
+	@rm -fr $(BUILD) $(TARGET).3dsx $(OUTPUT).smdh $(TARGET).elf $(TARGET).cia $(GFXBUILD)
 
 #---------------------------------------------------------------------------------
 $(GFXBUILD)/%.t3x	$(BUILD)/%.h	:	%.t3s

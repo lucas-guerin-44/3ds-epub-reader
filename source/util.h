@@ -32,6 +32,9 @@ void util_path_join(char* out, const char* dir, const char* file);
 // Get just the filename from a full path
 const char* util_basename(const char* path);
 
+// Delete a file from the filesystem
+bool util_delete_file(const char* path);
+
 // Simple FNV-1a hash of a string (for cache dir names)
 unsigned int util_hash_string(const char* str);
 
